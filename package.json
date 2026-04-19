@@ -1,0 +1,33 @@
+{
+  "name": "build-claude-code-typescript",
+  "version": "1.0.0",
+  "description": "Build Claude Code in TypeScript - A course implementing production AI agent patterns",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.27.0",
+    "ink": "^5.0.0",
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/react": "^18.2.0",
+    "typescript": "^5.3.0",
+    "ts-node": "^10.9.0",
+    "jest": "^29.0.0",
+    "@types/jest": "^29.0.0"
+  },
+  "keywords": [
+    "ai-agent",
+    "claude-code",
+    "typescript",
+    "coding-agent"
+  ],
+  "author": "Jarvis Learning",
+  "license": "MIT"
+}
