@@ -50,6 +50,13 @@ export interface Tool<
   
   // Deferred loading for MCP tools
   shouldDefer?: boolean;
+  
+  /**
+   * Interrupt behavior for this tool
+   * 'cancel' - Safe to interrupt (reads, searches)
+   * 'block' - Must complete (writes, long-running commands)
+   */
+  interruptBehavior?(input: z.infer<Input>): 'cancel' | 'block';
 }
 
 export interface ToolResult<T> {
@@ -148,4 +155,13 @@ export interface ErrorClassification {
   safeMessage: string;
   errno?: string;
   telemetrySafe: boolean;
+}
+
+/**
+ * Tool use block from API response (for streaming executor)
+ */
+export interface ToolUseBlock {
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
 }

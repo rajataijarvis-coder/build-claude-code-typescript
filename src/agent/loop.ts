@@ -1,8 +1,8 @@
 /**
- * Agent Loop - Core Implementation
+ * Agent Loop - Core Implementation with Concurrent Execution
  *
  * The async generator that runs every interaction.
- * Now integrated with the full Tool System.
+ * Now uses speculative execution and partition-based tool orchestration.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -16,11 +16,12 @@ import {
   TerminalReason
 } from './types.js';
 import {
-  executeToolPipeline,
   ToolRegistry,
   toolRegistry,
   ToolUseContext,
   getAllBaseTools,
+  StreamingToolExecutor,
+  executeToolCalls,
 } from '../tools/index.js';
 
 // Map agent message type to tool message type
@@ -107,12 +108,15 @@ function zodToJsonSchema(schema: unknown): AnthropicTool['input_schema'] {
 }
 
 /**
- * The Agent Loop - Core of Claude Code
+ * The Agent Loop with Concurrent Execution
  *
- * Now uses the 14-step tool execution pipeline for all tool calls.
+ * Supports two modes:
+ * 1. Streaming mode: Uses StreamingToolExecutor for speculative execution
+ * 2. Batch mode: Uses partition-based orchestrator for pre-known tool sets
  */
 export async function* agentLoop(
-  params: LoopParams
+  params: LoopParams,
+  useStreaming: boolean = true
 ): AsyncGenerator<LoopEvent, TerminalReason> {
   const state: LoopState = {
     messages: [...params.messages],
@@ -136,112 +140,20 @@ export async function* agentLoop(
 
   console.log(`🚀 Starting agent loop (max ${state.maxTurns} turns)`);
   console.log(`📦 Loaded ${tools.length} tools`);
+  console.log(`⚡ Concurrent execution: ${useStreaming ? 'streaming' : 'batch'}`);
 
   while (state.turnCount < state.maxTurns) {
     state.turnCount++;
     console.log(`\n--- Turn ${state.turnCount}/${state.maxTurns} ---`);
 
     try {
-      // Call the model with streaming
-      const stream = anthropic.messages.stream({
-        model: params.model ?? 'claude-3-5-sonnet-20241022',
-        max_tokens: 4096,
-        system: params.systemPrompt,
-        messages: state.messages.map(m => ({
-          role: m.role === 'tool' ? 'user' : m.role,
-          content: m.content,
-        })),
-        tools: tools as unknown as Anthropic.Tool[],
-      });
-
-      let assistantContent = '';
-      const toolCalls: ToolCall[] = [];
-
-      // Stream the response
-      for await (const event of stream) {
-        switch (event.type) {
-          case 'content_block_delta':
-            if (event.delta.type === 'text_delta') {
-              const text = event.delta.text;
-              assistantContent += text;
-              yield { type: 'assistant_message', content: text };
-            }
-            break;
-
-          case 'content_block_start':
-            if (event.content_block.type === 'tool_use') {
-              const toolCall: ToolCall = {
-                id: event.content_block.id,
-                name: event.content_block.name,
-                input: event.content_block.input as Record<string, unknown>,
-              };
-              toolCalls.push(toolCall);
-              yield { type: 'tool_call', tool: toolCall };
-            }
-            break;
-        }
+      if (useStreaming) {
+        // Streaming mode with speculative execution
+        yield* runWithStreaming(state, anthropic, tools, toolContext, params);
+      } else {
+        // Batch mode with partition algorithm
+        yield* runWithBatching(state, anthropic, tools, toolContext, params);
       }
-
-      // Add assistant message to history
-      const assistantMessage: AgentMessage = {
-        role: 'assistant',
-        content: assistantContent,
-        tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
-      };
-      state.messages.push(assistantMessage);
-
-      // No tool calls = done
-      if (toolCalls.length === 0) {
-        console.log('✅ No tool calls - task complete');
-        return {
-          reason: 'completed',
-          message: assistantContent
-        };
-      }
-
-      // Execute tools using the 14-step pipeline
-      console.log(`🔧 Executing ${toolCalls.length} tool(s) via pipeline...`);
-      const toolResults: ToolResult[] = [];
-
-      for (const toolCall of toolCalls) {
-        try {
-          // Use the new 14-step pipeline
-          const result = await executeToolPipeline(
-            toolCall,
-            toolContext,
-            toolRegistry
-          );
-
-          // Extract tool result in the expected format
-          const toolResult: ToolResult = {
-            tool_call_id: toolCall.id,
-            content: typeof result.data === 'string' ? result.data : JSON.stringify(result.data),
-            isError: typeof result.data === 'string' && result.data.startsWith('Error:'),
-          };
-
-          toolResults.push(toolResult);
-          yield { type: 'tool_result', result: toolResult };
-        } catch (error) {
-          const errorResult: ToolResult = {
-            tool_call_id: toolCall.id,
-            content: `Error: ${(error as Error).message}`,
-            isError: true,
-          };
-          toolResults.push(errorResult);
-          yield { type: 'tool_result', result: errorResult };
-        }
-      }
-
-      // Add tool results to conversation
-      for (const result of toolResults) {
-        state.messages.push({
-          role: 'tool',
-          content: result.content,
-          tool_call_id: result.tool_call_id,
-        });
-      }
-
-      console.log('🔄 Continuing to next turn...');
 
     } catch (error) {
       console.error('❌ Error in agent loop:', error);
@@ -253,4 +165,196 @@ export async function* agentLoop(
   }
 
   return { reason: 'max_turns_reached' };
+}
+
+/**
+ * Streaming mode: Tools execute while response streams
+ */
+async function* runWithStreaming(
+  state: LoopState,
+  anthropic: Anthropic,
+  tools: AnthropicTool[],
+  toolContext: ToolUseContext,
+  params: LoopParams
+): AsyncGenerator<LoopEvent, void> {
+  // Create streaming executor
+  const executor = new StreamingToolExecutor(toolContext, toolRegistry);
+  let streamError: Error | null = null;
+
+  // Start streaming
+  const stream = anthropic.messages.stream({
+    model: params.model ?? 'claude-3-5-sonnet-20241022',
+    max_tokens: 4096,
+    system: params.systemPrompt,
+    messages: state.messages.map(m => ({
+      role: m.role === 'tool' ? 'user' : m.role,
+      content: m.content,
+    })),
+    tools: tools as unknown as Anthropic.Tool[],
+  });
+
+  let assistantContent = '';
+  const toolCalls: ToolCall[] = [];
+
+  try {
+    // Stream the response
+    for await (const event of stream) {
+      switch (event.type) {
+        case 'content_block_delta':
+          if (event.delta.type === 'text_delta') {
+            const text = event.delta.text;
+            assistantContent += text;
+            yield { type: 'assistant_message', content: text };
+          }
+          break;
+
+        case 'content_block_start':
+          if (event.content_block.type === 'tool_use') {
+            const toolCall: ToolCall = {
+              id: event.content_block.id,
+              name: event.content_block.name,
+              input: event.content_block.input as Record<string, unknown>,
+            };
+            toolCalls.push(toolCall);
+            yield { type: 'tool_call', tool: toolCall };
+            
+            // Add to executor for speculative execution
+            executor.addTool(
+              {
+                id: event.content_block.id,
+                name: event.content_block.name,
+                input: event.content_block.input as Record<string, unknown>,
+              },
+              { content: assistantContent }
+            );
+          }
+          break;
+      }
+
+      // Check for completed tools mid-stream
+      for (const { toolId, result } of executor.getCompletedResults()) {
+        yield { type: 'tool_result', result };
+      }
+    }
+  } catch (error) {
+    streamError = error as Error;
+    executor.discard();
+  }
+
+  // Stream complete - collect remaining results
+  const toolResults: ToolResult[] = [];
+  
+  if (!streamError) {
+    for await (const { result } of executor.getRemainingResults()) {
+      toolResults.push(result);
+      yield { type: 'tool_result', result };
+    }
+  }
+
+  // Add messages to state
+  const assistantMessage: AgentMessage = {
+    role: 'assistant',
+    content: assistantContent,
+    tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+  };
+  state.messages.push(assistantMessage);
+
+  for (const result of toolResults) {
+    state.messages.push({
+      role: 'tool',
+      content: result.content,
+      tool_call_id: result.tool_call_id,
+    });
+  }
+
+  // Check completion
+  if (toolCalls.length === 0) {
+    console.log('✅ No tool calls - task complete');
+    return;
+  }
+
+  if (streamError) {
+    throw streamError;
+  }
+
+  console.log('🔄 Continuing to next turn...');
+}
+
+/**
+ * Batch mode: Wait for full response, then partition and execute
+ */
+async function* runWithBatching(
+  state: LoopState,
+  anthropic: Anthropic,
+  tools: AnthropicTool[],
+  toolContext: ToolUseContext,
+  params: LoopParams
+): AsyncGenerator<LoopEvent, void> {
+  // Get full response (non-streaming)
+  const response = await anthropic.messages.create({
+    model: params.model ?? 'claude-3-5-sonnet-20241022',
+    max_tokens: 4096,
+    system: params.systemPrompt,
+    messages: state.messages.map(m => ({
+      role: m.role === 'tool' ? 'user' : m.role,
+      content: m.content,
+    })),
+    tools: tools as unknown as Anthropic.Tool[],
+  });
+
+  // Extract content and tool calls
+  let assistantContent = '';
+  const toolCalls: ToolCall[] = [];
+
+  for (const block of response.content) {
+    if (block.type === 'text') {
+      assistantContent += block.text;
+      yield { type: 'assistant_message', content: block.text };
+    } else if (block.type === 'tool_use') {
+      const toolCall: ToolCall = {
+        id: block.id,
+        name: block.name,
+        input: block.input as Record<string, unknown>,
+      };
+      toolCalls.push(toolCall);
+      yield { type: 'tool_call', tool: toolCall };
+    }
+  }
+
+  // Execute tools using partition algorithm
+  const toolResults: ToolResult[] = [];
+  
+  if (toolCalls.length > 0) {
+    console.log(`🔧 Executing ${toolCalls.length} tool(s) via partition algorithm...`);
+    
+    const generator = executeToolCalls(toolCalls, toolContext, toolRegistry);
+    
+    for await (const { result } of generator) {
+      toolResults.push(result);
+      yield { type: 'tool_result', result };
+    }
+  }
+
+  // Add messages to state
+  const assistantMessage: AgentMessage = {
+    role: 'assistant',
+    content: assistantContent,
+    tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+  };
+  state.messages.push(assistantMessage);
+
+  for (const result of toolResults) {
+    state.messages.push({
+      role: 'tool',
+      content: result.content,
+      tool_call_id: result.tool_call_id,
+    });
+  }
+
+  if (toolCalls.length === 0) {
+    console.log('✅ No tool calls - task complete');
+    return;
+  }
+
+  console.log('🔄 Continuing to next turn...');
 }

@@ -1,8 +1,8 @@
 /**
- * BashTool - Execute bash commands
- *
- * The most complex tool with input-dependent concurrency classification.
- * Parses commands to determine if they're read-only and safe for parallel execution.
+ * BashTool - Execute bash commands with concurrency classification
+ * 
+ * The most complex tool because the same tool can be either
+ * concurrency-safe or not depending on the command.
  */
 
 import { z } from 'zod';
@@ -19,108 +19,127 @@ const BashInput = z.object({
 });
 
 /**
- * Known safe command sets for concurrency classification
+ * Command sets for concurrency classification
  */
-const BASH_SEARCH_COMMANDS = ['grep', 'find', 'rg', 'ag', 'ack'];
-const BASH_READ_COMMANDS = ['cat', 'head', 'tail', 'less', 'more', 'ls', 'pwd', 'echo', 'which', 'type'];
-const BASH_LIST_COMMANDS = ['ls', 'll', 'dir', 'tree'];
-const BASH_NEUTRAL_COMMANDS = ['echo', 'printf', 'true', 'false', 'clear', 'date', 'whoami', 'hostname'];
+const SEARCH_COMMANDS = new Set(['grep', 'find', 'rg', 'ag', 'ack', 'fd']);
+const READ_COMMANDS = new Set(['cat', 'head', 'tail', 'less', 'more', 'ls', 'pwd', 'echo', 'which', 'type', 'file', 'stat', 'wc', 'jq', 'yq']);
+const LIST_COMMANDS = new Set(['ls', 'll', 'dir', 'tree', 'find']);
+const NEUTRAL_COMMANDS = new Set(['echo', 'printf', 'true', 'false', 'clear', 'date', 'whoami', 'hostname', 'uname']);
+const WRITE_COMMANDS = new Set(['rm', 'mv', 'cp', 'mkdir', 'touch', 'chmod', 'chown', 'dd', 'mkfs', 'mount', 'umount', 'tar', 'zip', 'unzip']);
 
 /**
- * Parse compound command and classify subcommands
- *
+ * Split compound commands by operators
  * "cd /tmp && mkdir build && ls build" -> ['cd /tmp', 'mkdir build', 'ls build']
- * Each subcommand is classified for safety.
  */
-function classifyCommand(command: string): {
+function splitCommandWithOperators(command: string): string[] {
+  const operators = /&&|;|\|\||\|/g;
+  return command
+    .split(operators)
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Classify a single subcommand
+ */
+function classifySubcommand(subcommand: string): {
+  isReadOnly: boolean;
+  isSearch: boolean;
+  isWrite: boolean;
+  command: string;
+} {
+  const tokens = subcommand.split(/\s+/);
+  const cmd = tokens[0];
+  
+  const isSearch = SEARCH_COMMANDS.has(cmd);
+  const isRead = READ_COMMANDS.has(cmd);
+  const isNeutral = NEUTRAL_COMMANDS.has(cmd);
+  const isWrite = WRITE_COMMANDS.has(cmd);
+  
+  // Check for redirections (writes)
+  const hasRedirection = subcommand.includes('>') || subcommand.includes('>>');
+  
+  // Check for in-place editing
+  const hasInPlaceEdit = cmd === 'sed' && subcommand.includes('-i');
+  
+  // Check for background process
+  const hasBackground = subcommand.includes('&');
+  
+  return {
+    isReadOnly: (isSearch || isRead || isNeutral) && !hasRedirection && !hasInPlaceEdit && !hasBackground,
+    isSearch,
+    isWrite: isWrite || hasRedirection || hasInPlaceEdit,
+    command: cmd,
+  };
+}
+
+/**
+ * Full command classification
+ */
+export function classifyCommand(command: string): {
   isReadOnly: boolean;
   isConcurrencySafe: boolean;
   subcommands: string[];
+  hasBackground: boolean;
+  hasPipe: boolean;
 } {
-  // Split by operators
-  const operators = /&&|;|\|\||\|/g;
-  const subcommands = command
-    .split(operators)
-    .map((s) => s.trim())
-    .filter(Boolean);
-
+  const subcommands = splitCommandWithOperators(command);
+  
   let hasWrite = false;
   let hasDangerous = false;
   let hasBackground = false;
-
+  let hasPipe = command.includes('|') && !command.includes('||');
+  
   for (const sub of subcommands) {
-    const tokens = sub.split(/\s+/);
-    const cmd = tokens[0];
-
-    // Check for background process operator
+    const classification = classifySubcommand(sub);
+    
+    if (classification.isWrite) {
+      hasWrite = true;
+    }
+    
     if (sub.includes('&')) {
       hasBackground = true;
     }
-
-    // Neutral commands don't affect classification
-    if (BASH_NEUTRAL_COMMANDS.includes(cmd)) continue;
-
-    // Check for write operations
-    const writeCommands = [
-      'rm',
-      'mv',
-      'cp',
-      'mkdir',
-      'touch',
-      'chmod',
-      'chown',
-      'dd',
-      'mkfs',
-      'mount',
-    ];
-    if (writeCommands.some((w) => sub.includes(w))) {
-      hasWrite = true;
-    }
-
-    // Check for redirections (writes)
-    if (sub.includes('>') || sub.includes('>>')) {
-      hasWrite = true;
-    }
-
-    // Check for in-place editing with sed
-    if (sub.includes('sed') && sub.includes('-i')) {
-      hasWrite = true;
-    }
-
-    // Check for dangerous patterns using simple string checks
+    
+    // Check for dangerous patterns
     const dangerousPatterns = [
       'rm -rf / ',
       'rm -rf /',
+      'rm -rf /*',
       '> /dev/sda',
       ':(){ :|:& };:',
+      'fork bomb',
     ];
-    
-    // Check for curl pipe patterns
-    if (sub.includes('curl') && (sub.includes('| sh') || sub.includes('| bash'))) {
-      hasDangerous = true;
-    }
     
     for (const pattern of dangerousPatterns) {
       if (sub.includes(pattern)) {
         hasDangerous = true;
       }
     }
+    
+    // Check for curl pipe
+    if (sub.includes('curl') && (sub.includes('| sh') || sub.includes('| bash'))) {
+      hasDangerous = true;
+    }
   }
-
+  
   return {
     isReadOnly: !hasWrite,
     isConcurrencySafe: !hasWrite && !hasDangerous && !hasBackground,
     subcommands,
+    hasBackground,
+    hasPipe,
   };
 }
 
 export const BashTool = buildTool({
   name: 'Bash',
-  description: 'Execute a bash command in the shell',
+  description: 'Execute a bash command in the shell. Commands are classified for concurrency safety based on their content.',
   inputSchema: BashInput,
   maxResultSizeChars: 30000,
 
-  // INPUT-DEPENDENT: Same tool, different inputs = different safety
+  // INPUT-DEPENDENT CONCURRENCY CLASSIFICATION
+  // Same tool, different inputs = different safety
   isConcurrencySafe: (input) => {
     const classification = classifyCommand(input.command);
     return classification.isConcurrencySafe;
@@ -131,104 +150,91 @@ export const BashTool = buildTool({
     return classification.isReadOnly;
   },
 
+  // Validation
+  validateInput: (input) => {
+    const { command } = input;
+    
+    // Block empty commands
+    if (!command.trim()) {
+      return { valid: false, error: 'Empty command' };
+    }
+    
+    // Block dangerous patterns
+    const dangerousPatterns = [
+      { pattern: 'rm -rf / ', reason: 'Dangerous: rm -rf /' },
+      { pattern: 'rm -rf /', exact: true, reason: 'Dangerous: rm -rf /' },
+      { pattern: '> /dev/sda', reason: 'Dangerous: disk overwrite' },
+      { pattern: ':(){ :|:& };:', reason: 'Dangerous: fork bomb' },
+    ];
+    
+    for (const { pattern, reason, exact } of dangerousPatterns) {
+      const matches = exact ? command.trim() === pattern : command.includes(pattern);
+      if (matches) {
+        return { valid: false, error: reason };
+      }
+    }
+    
+    return { valid: true };
+  },
+
+  // Permission check
   checkPermissions: (input, context) => {
-    try {
-      const { isReadOnly, subcommands } = classifyCommand(input.command);
-
-      // In plan mode, deny writes
-      if (context.permissionMode === 'plan' && !isReadOnly) {
-        return {
-          behavior: 'deny',
-          reason: 'Write operation blocked in plan mode',
-        };
-      }
-
-      // Block obviously dangerous patterns using string checks
-      const cmd = input.command;
-      
-      // Check for rm -rf root
-      if (cmd.includes('rm -rf / ') || cmd === 'rm -rf /') {
-        return {
-          behavior: 'deny',
-          reason: 'Dangerous: rm -rf /',
-        };
-      }
-      
-      // Check for rm -rf all
-      if (cmd.includes('rm -rf /*')) {
-        return {
-          behavior: 'deny',
-          reason: 'Dangerous: rm -rf /*',
-        };
-      }
-      
-      // Check for disk overwrite
-      if (cmd.includes('> /dev/sda')) {
-        return {
-          behavior: 'deny',
-          reason: 'Dangerous: disk overwrite',
-        };
-      }
-      
-      // Check for fork bomb
-      if (cmd.includes(':(){ :|:& };:') || cmd.includes('fork bomb')) {
-        return {
-          behavior: 'deny',
-          reason: 'Dangerous: fork bomb',
-        };
-      }
-      
-      // Check for curl pipe
-      if (cmd.includes('curl') && (cmd.includes('| sh') || cmd.includes('| bash'))) {
-        return {
-          behavior: 'deny',
-          reason: 'Dangerous: pipe from curl',
-        };
-      }
-
-      // Warn about multi-command operations
-      if (subcommands.length > 1 && !isReadOnly) {
-        // Multi-command write operations need explicit permission
-        return { behavior: 'passthrough' };
-      }
-    } catch {
-      // Fail-safe: if we can't parse, require explicit permission
+    const classification = classifyCommand(input.command);
+    
+    // In plan mode, deny writes
+    if (context.permissionMode === 'plan' && !classification.isReadOnly) {
+      return {
+        behavior: 'deny',
+        reason: 'Write operation blocked in plan mode',
+      };
+    }
+    
+    // Complex multi-command writes require explicit permission
+    if (classification.subcommands.length > 1 && !classification.isReadOnly) {
       return { behavior: 'passthrough' };
     }
-
+    
     return { behavior: 'passthrough' };
   },
 
+  // Execution
   call: async (input, context) => {
     const { command, cwd, timeout = 60000 } = input;
-
-    // Apply timeout via abort controller
-    const abortPromise = new Promise<never>((_, reject) => {
-      context.abortController.signal.addEventListener('abort', () => {
-        reject(new Error('Command aborted'));
-      });
-    });
+    
+    // Check abort signal
+    if (context.abortController.signal.aborted) {
+      throw new Error('Command aborted before execution');
+    }
 
     const execPromise = execAsync(command, {
       cwd: cwd || context.workingDirectory,
       timeout,
-      maxBuffer: 1024 * 1024, // 1MB buffer
+      maxBuffer: 1024 * 1024, // 1MB
+    });
+
+    // Race with abort signal
+    const abortPromise = new Promise<never>((_, reject) => {
+      const handler = () => reject(new Error('Command aborted'));
+      context.abortController.signal.addEventListener('abort', handler, { once: true });
     });
 
     try {
       const { stdout, stderr } = await Promise.race([execPromise, abortPromise]);
-
-      // Detect image output by magic bytes (simplified check)
+      
+      // Detect image output by magic bytes
       const hasImage = stdout.includes('\x89PNG') || stdout.includes('\xff\xd8\xff');
-
-      const output = stdout || stderr || 'Command completed successfully';
-
+      
+      const output = stdout || stderr || '(no output)';
+      
       return {
         data: output,
-        // Could include metadata about detected content type
+        metadata: {
+          hasImage,
+          command,
+          cwd: cwd || context.workingDirectory,
+        },
       };
     } catch (error) {
-      // Handle timeout or execution errors
       if (error instanceof Error) {
         if (error.message.includes('timeout')) {
           throw new Error(`Command timed out after ${timeout}ms`);
