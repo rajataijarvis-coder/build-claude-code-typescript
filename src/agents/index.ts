@@ -10,7 +10,19 @@ export * from './builtins.js';
 export * from './registry.js';
 export { createAgentTool } from './tool.js';
 export { AsyncAgentManager, asyncAgentManager } from './async.js';
-export { forkAgent, filterIncompleteToolCalls, isForkChild } from './fork.js';
+export {
+  FORK_PLACEHOLDER_RESULT,
+  FORK_BOILERPLATE,
+  wrapDirective,
+  buildForkedMessages,
+  isForkChild,
+  preventRecursiveFork,
+  filterIncompleteToolCalls,
+  cloneFileStateCache,
+  spawnForkAgent,
+  calculateCacheSavings,
+  type CreateForkAgentParams,
+} from './fork.js';
 
 import { agentRegistry } from './registry.js';
 

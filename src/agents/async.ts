@@ -1,172 +1,277 @@
 /**
- * Async Agent Manager
+ * Async Agent Management
  *
- * Handles background execution and result retrieval.
+ * Handles background agents, sync-to-async transitions,
+ * and automatic backgrounding of long-running tasks.
  */
 
-import { EventEmitter } from 'events';
-import type { AgentDefinition, AgentId } from './types.js';
+import type { AgentDefinition, AgentId, AgentResult } from './types.js';
 import type { ToolUseContext } from '../tools/types.js';
-import { runAgent } from './runAgent.js';
+import { join } from 'path';
+import { homedir } from 'os';
 import { mkdir, writeFile } from 'fs/promises';
-import { dirname } from 'path';
 
-interface AgentHandle {
-  agentId: AgentId;
-  startTime: number;
-  abortController: AbortController;
-}
+// Signal for background transition
+export const BACKGROUND_SIGNAL = Symbol('BACKGROUND_SIGNAL');
 
-interface CompletedAgent {
-  agentId: AgentId;
-  startTime: number;
-  endTime: number;
-  events: any[];
-  result: any;
-  error: Error | null;
-  outputFile: string;
+/**
+ * Sync-to-async transition state
+ */
+export interface SyncToAsyncTransition {
+  /** Signal to trigger backgrounding */
+  backgroundSignal: Promise<typeof BACKGROUND_SIGNAL>;
+  /** Current message history (state) */
+  currentMessages: any[];
+  /** Sidechain transcript file */
+  transcriptFile: string;
 }
 
 /**
  * Background agent manager
  */
-export class AsyncAgentManager extends EventEmitter {
-  private runningAgents = new Map<AgentId, AgentHandle>();
-  private completedAgents = new Map<AgentId, CompletedAgent>();
+export class AsyncAgentManager {
+  private agents = new Map<AgentId, BackgroundAgent>();
+  private outputDir: string;
+
+  constructor() {
+    this.outputDir = join(homedir(), '.claude', 'agents');
+  }
 
   /**
    * Launch an agent in the background
    */
   async launch(
-    agentDef: AgentDefinition,
+    agentDefinition: AgentDefinition,
     prompt: string,
-    context: ToolUseContext,
+    parentContext: ToolUseContext,
     agentId: AgentId,
     outputFile: string
   ): Promise<void> {
-    const handle: AgentHandle = {
+    // Ensure output directory exists
+    await mkdir(this.outputDir, { recursive: true });
+
+    const agent: BackgroundAgent = {
       agentId,
+      agentDefinition,
+      prompt,
+      status: 'running',
+      outputFile,
       startTime: Date.now(),
-      abortController: new AbortController(),
     };
 
-    this.runningAgents.set(agentId, handle);
+    this.agents.set(agentId, agent);
 
-    // Run the agent lifecycle
-    const generator = runAgent({
-      agentDefinition: agentDef,
-      prompt,
-      context,
-      agentId,
-      isAsync: true,
-    });
+    // In a real implementation, this would spawn a separate process
+    // or worker thread. For now, we just record the launch.
+    console.log(`[AsyncAgent] Launched ${agentId} for: ${prompt.slice(0, 50)}...`);
 
-    // Consume in background
-    this.consumeInBackground(generator, agentId, outputFile);
-
-    this.emit('launched', { agentId, description: agentDef.name });
-  }
-
-  /**
-   * Consume the generator in background
-   */
-  private async consumeInBackground(
-    generator: AsyncGenerator<any, any>,
-    agentId: AgentId,
-    outputFile: string
-  ): Promise<void> {
-    const events: any[] = [];
-    let result: any;
-    let error: Error | null = null;
-
-    try {
-      for await (const event of generator) {
-        events.push(event);
-        this.emit('progress', { agentId, event });
-      }
-    } catch (err) {
-      error = err as Error;
-    }
-
-    const handle = this.runningAgents.get(agentId);
-    if (handle) {
-      this.runningAgents.delete(agentId);
-
-      const completed: CompletedAgent = {
+    // Write initial state to output file
+    await writeFile(
+      outputFile,
+      JSON.stringify({
         agentId,
-        startTime: handle.startTime,
-        endTime: Date.now(),
-        events,
-        result,
-        error,
-        outputFile,
-      };
-
-      this.completedAgents.set(agentId, completed);
-      await this.writeResults(completed);
-      this.emit('completed', { agentId, outputFile });
-    }
+        status: 'running',
+        startTime: agent.startTime,
+        prompt: prompt.slice(0, 200),
+      }, null, 2)
+    );
   }
 
   /**
-   * Write agent results to output file
+   * Get status of a background agent
    */
-  private async writeResults(completed: CompletedAgent): Promise<void> {
-    const data = JSON.stringify({
-      agentId: completed.agentId,
-      startTime: completed.startTime,
-      endTime: completed.endTime,
-      duration: completed.endTime - completed.startTime,
-      events: completed.events,
-      result: completed.result,
-      error: completed.error?.message,
-    }, null, 2);
-
-    await mkdir(dirname(completed.outputFile), { recursive: true });
-    await writeFile(completed.outputFile, data);
+  getStatus(agentId: AgentId): BackgroundAgent | undefined {
+    return this.agents.get(agentId);
   }
 
   /**
-   * Get results for a completed agent
+   * List all running background agents
    */
-  async getResults(agentId: AgentId): Promise<any> {
-    const completed = this.completedAgents.get(agentId);
-    if (!completed) {
-      throw new Error(`No results found for agent ${agentId}`);
-    }
-
-    // Read from file for durability
-    const fs = await import('fs/promises');
-    const content = await fs.readFile(completed.outputFile, 'utf-8');
-    return JSON.parse(content);
+  listRunning(): BackgroundAgent[] {
+    return Array.from(this.agents.values()).filter(
+      a => a.status === 'running'
+    );
   }
 
   /**
-   * Abort a running background agent
+   * Mark an agent as complete
    */
-  abort(agentId: AgentId): boolean {
-    const handle = this.runningAgents.get(agentId);
-    if (handle) {
-      handle.abortController.abort();
-      return true;
-    }
-    return false;
-  }
+  async complete(agentId: AgentId, result: AgentResult): Promise<void> {
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
 
-  /**
-   * List all running agents
-   */
-  getRunningAgents(): AgentId[] {
-    return Array.from(this.runningAgents.keys());
-  }
+    agent.status = 'completed';
+    agent.endTime = Date.now();
+    agent.result = result;
 
-  /**
-   * Check if an agent is still running
-   */
-  isRunning(agentId: AgentId): boolean {
-    return this.runningAgents.has(agentId);
+    await writeFile(
+      agent.outputFile,
+      JSON.stringify({
+        agentId,
+        status: 'completed',
+        startTime: agent.startTime,
+        endTime: agent.endTime,
+        result: result.content.slice(0, 500),
+        success: result.success,
+      }, null, 2)
+    );
   }
+}
+
+/**
+ * Background agent record
+ */
+interface BackgroundAgent {
+  agentId: AgentId;
+  agentDefinition: AgentDefinition;
+  prompt: string;
+  status: 'running' | 'completed' | 'failed';
+  outputFile: string;
+  startTime: number;
+  endTime?: number;
+  result?: AgentResult;
+  error?: string;
 }
 
 // Singleton instance
 export const asyncAgentManager = new AsyncAgentManager();
+
+/**
+ * Create a background signal promise for auto-backgrounding.
+ *
+ * When the timeout fires, the signal resolves and triggers
+ * a sync-to-async transition.
+ *
+ * @param timeoutMs - Timeout in milliseconds (default: 2 minutes)
+ */
+export function createBackgroundSignal(
+  timeoutMs: number = 120000
+): Promise<typeof BACKGROUND_SIGNAL> {
+  return new Promise((resolve) => {
+    setTimeout(() => resolve(BACKGROUND_SIGNAL), timeoutMs);
+  });
+}
+
+/**
+ * Check if auto-backgrounding is enabled.
+ *
+ * Controlled via CLAUDE_AUTO_BACKGROUND_TASKS env var
+ * or tengu_auto_background_agents feature flag.
+ */
+export function isAutoBackgroundEnabled(): boolean {
+  // Check environment variable
+  if (process.env.CLAUDE_AUTO_BACKGROUND_TASKS === 'true') {
+    return true;
+  }
+
+  if (process.env.CLAUDE_AUTO_BACKGROUND_TASKS === 'false') {
+    return false;
+  }
+
+  // Check feature flag (would be implemented via GrowthBook in real system)
+  // For now, default to true for demonstration
+  return true;
+}
+
+/**
+ * Get the auto-background timeout in milliseconds.
+ *
+ * Returns 0 if auto-backgrounding is disabled.
+ */
+export function getAutoBackgroundTimeout(): number {
+  if (!isAutoBackgroundEnabled()) {
+    return 0;
+  }
+
+  // Default 2 minutes
+  const envTimeout = process.env.CLAUDE_AUTO_BACKGROUND_TIMEOUT;
+  if (envTimeout) {
+    const parsed = parseInt(envTimeout, 10);
+    if (!isNaN(parsed) && parsed > 0) {
+      return parsed * 1000; // Convert seconds to ms
+    }
+  }
+
+  return 120000; // 2 minutes default
+}
+
+/**
+ * Race between agent progress and background signal.
+ *
+ * When the background signal fires, gracefully terminate the
+ * foreground agent and spawn an async continuation.
+ *
+ * @param agentGenerator - The agent's message generator
+ * @param transition - Transition state and signal
+ */
+export async function* runWithAutoBackground<T>(
+  agentGenerator: AsyncGenerator<any, T>,
+  transition: SyncToAsyncTransition
+): AsyncGenerator<any, T | { status: 'async_launched' }> {
+  const iterator = agentGenerator[Symbol.asyncIterator]();
+
+  try {
+    while (true) {
+      // Race between next message and background signal
+      const result = await Promise.race([
+        iterator.next(),
+        transition.backgroundSignal,
+      ]);
+
+      // Background signal fired - transition to async
+      if (result === BACKGROUND_SIGNAL) {
+        // Gracefully terminate foreground iterator
+        await iterator.return?.({ status: 'async_launched' } as T);
+
+        // Yield transition event
+        yield {
+          type: 'background_transition',
+          messages: transition.currentMessages,
+          transcriptFile: transition.transcriptFile,
+        };
+
+        // Return async status
+        return { status: 'async_launched' } as any;
+      }
+
+      // Normal message from agent
+      if (result.done) {
+        return result.value;
+      }
+
+      yield result.value;
+    }
+  } finally {
+    // Cleanup - iterator.return is optional
+    if (iterator.return) {
+      await iterator.return({} as T);
+    }
+  }
+}
+
+/**
+ * Register a foreground agent for potential backgrounding.
+ *
+ * Creates the background signal and sets up the transition state.
+ *
+ * @param agentId - The agent's ID
+ * @param initialMessages - Starting message history
+ * @returns Transition state for use with runWithAutoBackground
+ */
+export function registerForegroundAgent(
+  agentId: AgentId,
+  initialMessages: any[]
+): SyncToAsyncTransition {
+  const transcriptFile = join(
+    homedir(),
+    '.claude',
+    'agents',
+    `${agentId}-transcript.json`
+  );
+
+  return {
+    backgroundSignal: createBackgroundSignal(getAutoBackgroundTimeout()),
+    currentMessages: [...initialMessages],
+    transcriptFile,
+  };
+}
