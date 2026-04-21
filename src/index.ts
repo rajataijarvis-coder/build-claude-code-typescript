@@ -1,5 +1,5 @@
 // src/index.ts
-import { Bootstrap } from './bootstrap';
+import { Bootstrap } from './bootstrap.js';
 
 async function main() {
   console.log('🚀 Starting Claude Code TypeScript...\n');

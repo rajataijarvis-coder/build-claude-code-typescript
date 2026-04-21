@@ -1,8 +1,8 @@
 // src/bootstrap.ts
-import { Container } from './di/container';
-import { Config, ConfigLoader } from './config/config';
-import { StateManager } from './state/state-manager';
-import { Logger } from './utils/logger';
+import { Container } from './di/container.js';
+import { Config, ConfigLoader } from './config/config.js';
+import { StateManager } from './state/state-manager.js';
+import { Logger } from './utils/logger.js';
 
 export interface BootstrapResult {
   container: Container;

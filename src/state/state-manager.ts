@@ -1,5 +1,5 @@
 // src/state/state-manager.ts
-import { Config } from '../config/config';
+import { Config } from '../config/config.js';
 
 export interface AppState {
   conversation: {

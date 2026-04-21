@@ -9,12 +9,17 @@
     "start": "node dist/cli.js",
     "dev": "tsc --watch"
   },
-  "keywords": ["claude", "ai", "agent", "tutorial"],
+  "keywords": [
+    "claude",
+    "ai",
+    "agent",
+    "tutorial"
+  ],
   "author": "Rajat Ratewal",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.9.3"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",

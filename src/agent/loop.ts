@@ -1,23 +1,115 @@
 /**
  * Agent Loop - Core Implementation
- * 
+ *
  * The async generator that runs every interaction.
+ * Now integrated with the full Tool System.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import { 
-  Message, 
-  ToolCall, 
-  ToolResult, 
-  LoopParams, 
-  LoopState, 
-  LoopEvent, 
-  TerminalReason 
+import {
+  Message as AgentMessage,
+  ToolCall,
+  ToolResult,
+  LoopParams,
+  LoopState,
+  LoopEvent,
+  TerminalReason
 } from './types.js';
-import { executeTool } from '../tools/executor.js';
+import {
+  executeToolPipeline,
+  ToolRegistry,
+  toolRegistry,
+  ToolUseContext,
+  getAllBaseTools,
+} from '../tools/index.js';
+
+// Map agent message type to tool message type
+interface ToolMessage {
+  role: 'user' | 'assistant' | 'tool' | 'system';
+  content: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+  name?: string;
+}
+
+/**
+ * Convert agent messages to tool messages
+ */
+function toToolMessages(messages: AgentMessage[]): ToolMessage[] {
+  return messages.map(m => ({
+    ...m,
+    role: m.role === 'tool' ? 'tool' : m.role === 'assistant' ? 'assistant' : 'user',
+  }));
+}
+
+/**
+ * Build ToolUseContext for the agent loop
+ */
+async function buildToolContext(
+  workingDirectory: string,
+  options: ToolUseContext['options']
+): Promise<ToolUseContext> {
+  return {
+    options,
+    abortController: new AbortController(),
+    readFileState: new Map(),
+    messages: [],
+    workingDirectory,
+    permissionMode: 'default',
+    alwaysAllowRules: [],
+    alwaysDenyRules: [],
+    alwaysAskRules: [],
+  };
+}
+
+/**
+ * Anthropic tool type
+ */
+interface AnthropicTool {
+  name: string;
+  description: string;
+  input_schema: {
+    type: 'object';
+    properties: Record<string, unknown>;
+    required: string[];
+  };
+}
+
+/**
+ * Convert tool definitions to Anthropic tool format
+ */
+async function getAnthropicTools(registry: ToolRegistry): Promise<AnthropicTool[]> {
+  const baseTools = await getAllBaseTools();
+
+  // Register all tools
+  for (const tool of baseTools) {
+    registry.register(tool);
+  }
+
+  return baseTools.map(tool => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: zodToJsonSchema(tool.inputSchema),
+  }));
+}
+
+/**
+ * Simple Zod to JSON Schema converter
+ */
+function zodToJsonSchema(schema: unknown): AnthropicTool['input_schema'] {
+  // In production, use zod-to-json-schema package
+  // This is a simplified version for the tutorial
+  return {
+    type: 'object',
+    properties: {},
+    required: [],
+  };
+}
 
 /**
  * The Agent Loop - Core of Claude Code
+ *
+ * Now uses the 14-step tool execution pipeline for all tool calls.
  */
 export async function* agentLoop(
   params: LoopParams
@@ -32,7 +124,18 @@ export async function* agentLoop(
     apiKey: params.apiKey,
   });
 
+  // Build tool context
+  const toolContext = await buildToolContext(process.cwd(), {
+    toolSet: [],
+    model: params.model ?? 'claude-3-5-sonnet-20241022',
+    debug: false,
+  });
+
+  // Get tools
+  const tools = await getAnthropicTools(toolRegistry);
+
   console.log(`🚀 Starting agent loop (max ${state.maxTurns} turns)`);
+  console.log(`📦 Loaded ${tools.length} tools`);
 
   while (state.turnCount < state.maxTurns) {
     state.turnCount++;
@@ -48,43 +151,7 @@ export async function* agentLoop(
           role: m.role === 'tool' ? 'user' : m.role,
           content: m.content,
         })),
-        tools: [
-          {
-            name: 'read_file',
-            description: 'Read the contents of a file',
-            input_schema: {
-              type: 'object',
-              properties: {
-                file_path: { type: 'string' },
-              },
-              required: ['file_path'],
-            },
-          },
-          {
-            name: 'write_file',
-            description: 'Write content to a file',
-            input_schema: {
-              type: 'object',
-              properties: {
-                file_path: { type: 'string' },
-                content: { type: 'string' },
-              },
-              required: ['file_path', 'content'],
-            },
-          },
-          {
-            name: 'execute_command',
-            description: 'Execute a shell command',
-            input_schema: {
-              type: 'object',
-              properties: {
-                command: { type: 'string' },
-                cwd: { type: 'string' },
-              },
-              required: ['command'],
-            },
-          },
-        ],
+        tools: tools as unknown as Anthropic.Tool[],
       });
 
       let assistantContent = '';
@@ -116,7 +183,7 @@ export async function* agentLoop(
       }
 
       // Add assistant message to history
-      const assistantMessage: Message = {
+      const assistantMessage: AgentMessage = {
         role: 'assistant',
         content: assistantContent,
         tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
@@ -126,21 +193,34 @@ export async function* agentLoop(
       // No tool calls = done
       if (toolCalls.length === 0) {
         console.log('✅ No tool calls - task complete');
-        return { 
-          reason: 'completed', 
-          message: assistantContent 
+        return {
+          reason: 'completed',
+          message: assistantContent
         };
       }
 
-      // Execute tools
-      console.log(`🔧 Executing ${toolCalls.length} tool(s)...`);
+      // Execute tools using the 14-step pipeline
+      console.log(`🔧 Executing ${toolCalls.length} tool(s) via pipeline...`);
       const toolResults: ToolResult[] = [];
 
       for (const toolCall of toolCalls) {
         try {
-          const result = await executeTool(toolCall);
-          toolResults.push(result);
-          yield { type: 'tool_result', result };
+          // Use the new 14-step pipeline
+          const result = await executeToolPipeline(
+            toolCall,
+            toolContext,
+            toolRegistry
+          );
+
+          // Extract tool result in the expected format
+          const toolResult: ToolResult = {
+            tool_call_id: toolCall.id,
+            content: typeof result.data === 'string' ? result.data : JSON.stringify(result.data),
+            isError: typeof result.data === 'string' && result.data.startsWith('Error:'),
+          };
+
+          toolResults.push(toolResult);
+          yield { type: 'tool_result', result: toolResult };
         } catch (error) {
           const errorResult: ToolResult = {
             tool_call_id: toolCall.id,
@@ -165,9 +245,9 @@ export async function* agentLoop(
 
     } catch (error) {
       console.error('❌ Error in agent loop:', error);
-      return { 
-        reason: 'error', 
-        error: (error as Error).message 
+      return {
+        reason: 'error',
+        error: (error as Error).message
       };
     }
   }
