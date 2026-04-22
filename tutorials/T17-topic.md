@@ -1,3 +1,3 @@
 # Tutorial 17
 
-Content coming...
+Status: Complete - Performance optimization tutorial written to T17-performance.md
