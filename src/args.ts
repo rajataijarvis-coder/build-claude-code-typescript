@@ -6,6 +6,7 @@
 
 export interface ParsedArgs {
   verbose?: boolean;
+  debug?: boolean;
   model?: string;
   cwd?: string;
   print?: boolean;

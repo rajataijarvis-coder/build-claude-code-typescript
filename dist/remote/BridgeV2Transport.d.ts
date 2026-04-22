@@ -4,8 +4,8 @@
  * Direct sessions with SSE for reads, CCRClient for writes.
  * No polling, no Environments API -- just create session, connect bridge, open transport.
  */
-import { BridgeTransportConfig, BridgeMessage } from './types.js';
-import { BridgeTransport } from './BridgeTransport.js';
+import { BridgeMessage } from './types.js';
+import { BridgeTransport, BridgeTransportConfig } from './BridgeTransport.js';
 interface BridgeV2Config extends BridgeTransportConfig {
     /** Session ID */
     sessionId: string;

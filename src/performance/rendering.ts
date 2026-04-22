@@ -24,7 +24,7 @@ const DEFAULT_FRAME_CONFIG: FrameConfig = {
 };
 
 /** Throttled function wrapper */
-interface ThrottledFunction<T extends (...args: any[]) => any> {
+export interface ThrottledFunction<T extends (...args: any[]) => any> {
   (...args: Parameters<T>): void;
   cancel(): void;
   flush(): ReturnType<T> | undefined;
@@ -131,8 +131,8 @@ export class FrameScheduler {
     const interval = this.getFrameInterval();
     
     // Use requestAnimationFrame in browser, setTimeout in Node
-    if (typeof requestAnimationFrame !== 'undefined') {
-      requestAnimationFrame(renderFn);
+    if (typeof (globalThis as any).requestAnimationFrame !== 'undefined') {
+      (globalThis as any).requestAnimationFrame(renderFn);
     } else {
       setTimeout(renderFn, interval);
     }
@@ -211,7 +211,7 @@ export class StylePool {
   private pool: ObjectPool<PooledStyle>;
 
   constructor() {
-    this.pool = new ObjectPool(
+    this.pool = new ObjectPool<PooledStyle>(
       () => ({ fg: 0, bg: 0, bold: false, italic: false, underline: false }),
       (s) => { s.fg = 0; s.bg = 0; s.bold = false; s.italic = false; s.underline = false; },
       100
@@ -237,7 +237,7 @@ export class StylePool {
  * 
  * Eliminates allocations for common render-path values.
  */
-export const FROZEN_EMPTY_ARRAY = Object.freeze([]) as unknown[];
+export const FROZEN_EMPTY_ARRAY: readonly unknown[] = Object.freeze([]);
 export const FROZEN_EMPTY_OBJECT = Object.freeze({});
 
 /**

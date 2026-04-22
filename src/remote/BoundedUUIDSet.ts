@@ -11,7 +11,7 @@
  */
 
 export class BoundedUUIDSet {
-  private buffer: string[];
+  private buffer: (string | undefined)[];
   private set: Set<string>;
   private head = 0;
   
@@ -20,7 +20,7 @@ export class BoundedUUIDSet {
    * @param capacity Maximum number of UUIDs to track
    */
   constructor(private capacity: number) {
-    this.buffer = new Array(capacity);
+    this.buffer = new Array<string | undefined>(capacity);
     this.set = new Set();
   }
   

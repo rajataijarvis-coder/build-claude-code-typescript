@@ -5,6 +5,9 @@
  * No cloud intermediary, no OAuth tokens -- just local control.
  *
  * Session states: starting → running → (detached) → stopping → stopped
+ *
+ * Note: Requires 'ws' package to be installed: npm install ws
+ * @ts-nocheck -- WebSocket types require @types/ws
  */
 import { BoundedUUIDSet } from './BoundedUUIDSet.js';
 /**
@@ -26,15 +29,18 @@ export class DirectConnectServer {
      * Start the server
      */
     async start() {
-        const { WebSocketServer } = await import('ws');
+        // @ts-ignore - Optional ws module
+        const wsModule = await import('ws');
+        const WebSocketServer = wsModule.WebSocketServer;
         const port = this.config.port ?? 0;
         const host = this.config.host ?? 'localhost';
         this.server = new WebSocketServer({ port, host });
-        this.server.on('connection', (ws, req) => {
+        const server = this.server;
+        server.on('connection', (ws, req) => {
             this.handleConnection(ws, req);
         });
         // Get actual port (if ephemeral)
-        const address = this.server.address();
+        const address = server.address();
         const actualPort = typeof address === 'object' ? address?.port : port;
         const url = `cc://${host}:${actualPort}`;
         console.log(`Direct Connect server listening on ${url}`);

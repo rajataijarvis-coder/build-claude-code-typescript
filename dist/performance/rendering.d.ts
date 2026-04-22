@@ -14,7 +14,7 @@ export interface FrameConfig {
     scrollDrainFactor: number;
 }
 /** Throttled function wrapper */
-interface ThrottledFunction<T extends (...args: any[]) => any> {
+export interface ThrottledFunction<T extends (...args: any[]) => any> {
     (...args: Parameters<T>): void;
     cancel(): void;
     flush(): ReturnType<T> | undefined;
@@ -102,7 +102,7 @@ export declare class StylePool {
  *
  * Eliminates allocations for common render-path values.
  */
-export declare const FROZEN_EMPTY_ARRAY: unknown[];
+export declare const FROZEN_EMPTY_ARRAY: readonly unknown[];
 export declare const FROZEN_EMPTY_OBJECT: Readonly<{}>;
 /**
  * Cell-level damage tracking
@@ -138,5 +138,4 @@ export declare class DamageTracker {
 export declare const frameScheduler: FrameScheduler;
 /** Global damage tracker */
 export declare const damageTracker: DamageTracker;
-export {};
 //# sourceMappingURL=rendering.d.ts.map

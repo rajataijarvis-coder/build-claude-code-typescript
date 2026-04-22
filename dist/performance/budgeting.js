@@ -51,7 +51,7 @@ export class BudgetManager {
             toolBudgets: new Map(Object.entries({
                 ...DEFAULT_TOOL_BUDGETS,
                 ...customBudgets,
-            })),
+            }).filter((entry) => entry[1] !== undefined)),
             aggregate: {
                 maxCharsPerMessage: 200_000,
                 maxTokensPerConversation: 500_000,

@@ -40,7 +40,7 @@ export class UpstreamProxy {
   };
   
   private websocket?: WebSocket;
-  private token?: string;
+  private token?: string | null;
   private relayServer?: ReturnType<typeof import('net').createServer>;
   
   constructor(private options: UpstreamProxyOptions) {}

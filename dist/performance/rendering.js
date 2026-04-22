@@ -97,8 +97,8 @@ export class FrameScheduler {
     scheduleRender(renderFn) {
         const interval = this.getFrameInterval();
         // Use requestAnimationFrame in browser, setTimeout in Node
-        if (typeof requestAnimationFrame !== 'undefined') {
-            requestAnimationFrame(renderFn);
+        if (typeof globalThis.requestAnimationFrame !== 'undefined') {
+            globalThis.requestAnimationFrame(renderFn);
         }
         else {
             setTimeout(renderFn, interval);

@@ -65,7 +65,12 @@ export class RemoteController {
         if (!this.bridge) {
             throw new Error('Bridge not initialized');
         }
-        await this.bridge.send(message);
+        await this.bridge.send({
+            type: 'user_message',
+            uuid: message.uuid,
+            content: message.content,
+            timestamp: Date.now(),
+        });
     }
     /**
      * Get Direct Connect sessions

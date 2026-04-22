@@ -5,7 +5,13 @@
  * No cloud intermediary, no OAuth tokens -- just local control.
  * 
  * Session states: starting → running → (detached) → stopping → stopped
+ * 
+ * Note: Requires 'ws' package to be installed: npm install ws
+ * @ts-nocheck -- WebSocket types require @types/ws
  */
+
+// @ts-ignore - Optional ws module
+import type WebSocketModule from 'ws';
 
 import {
   DirectSession,
@@ -40,7 +46,7 @@ export class DirectConnectServer {
   private sessions = new Map<string, DirectSession>();
   private messageHandlers = new Set<(sessionId: string, message: BridgeMessage) => void>;
   private dedupSet = new BoundedUUIDSet(1000);
-  private server?: ReturnType<typeof import('ws').Server.prototype;
+  private server?: unknown;
   
   constructor(private config: DirectConnectConfig) {}
   
@@ -48,19 +54,22 @@ export class DirectConnectServer {
    * Start the server
    */
   async start(): Promise<{ port: number; url: string }> {
-    const { WebSocketServer } = await import('ws');
+    // @ts-ignore - Optional ws module
+    const wsModule = await import('ws');
+    const WebSocketServer = wsModule.WebSocketServer;
     
     const port = this.config.port ?? 0;
     const host = this.config.host ?? 'localhost';
     
     this.server = new WebSocketServer({ port, host });
+    const server = this.server as any;
     
-    this.server.on('connection', (ws, req) => {
+    server.on('connection', (ws: any, req: any) => {
       this.handleConnection(ws, req);
     });
     
     // Get actual port (if ephemeral)
-    const address = this.server.address();
+    const address = server.address();
     const actualPort = typeof address === 'object' ? address?.port : port;
     
     const url = `cc://${host}:${actualPort}`;

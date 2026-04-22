@@ -6,14 +6,13 @@
  */
 
 import {
-  BridgeTransportConfig,
   BridgeV2Session,
   BridgeV2Connection,
   BridgeMessage,
   CCRMessage,
   WebSocketCloseCode,
 } from './types.js';
-import { BridgeTransport, parseSSEEvent, parseSSEData } from './BridgeTransport.js';
+import { BridgeTransport, BridgeTransportConfig, parseSSEEvent, parseSSEData } from './BridgeTransport.js';
 
 interface BridgeV2Config extends BridgeTransportConfig {
   /** Session ID */
@@ -95,7 +94,7 @@ export class BridgeV2Transport extends BridgeTransport {
       throw new Error(`Failed to connect bridge: ${response.status} ${response.statusText}`);
     }
     
-    const connection: BridgeV2Connection = await response.json();
+    const connection = await response.json() as BridgeV2Connection;
     this.workerJwt = connection.workerJwt;
     this.workerEpoch = connection.workerEpoch;
   }

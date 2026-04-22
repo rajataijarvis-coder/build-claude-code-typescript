@@ -5,6 +5,9 @@
  * No cloud intermediary, no OAuth tokens -- just local control.
  *
  * Session states: starting → running → (detached) → stopping → stopped
+ *
+ * Note: Requires 'ws' package to be installed: npm install ws
+ * @ts-nocheck -- WebSocket types require @types/ws
  */
 import { DirectSession, CCURL, BridgeMessage } from './types.js';
 export interface DirectConnectConfig {

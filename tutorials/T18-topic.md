@@ -1,3 +1,0 @@
-# Tutorial 18
-
-Content coming...
